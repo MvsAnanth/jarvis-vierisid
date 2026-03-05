@@ -277,7 +277,7 @@ export function extractGoalCompletion(goal: {
     let entityId: string;
 
     if (existing.length > 0) {
-      entityId = existing[0].id;
+      entityId = existing[0]!.id;
     } else {
       const entity = createEntity('concept', goal.title, {
         goal_id: goal.id,
