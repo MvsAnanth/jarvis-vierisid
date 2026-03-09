@@ -1,13 +1,23 @@
 /**
- * Desktop Tools — Desktop Automation via Sidecar RPC
+ * Desktop Tools — Desktop Automation via Sidecar RPC or Local Execution
  *
- * 8 tools for controlling desktop applications via the Go sidecar.
- * Each tool accepts a `target` parameter to route to a specific sidecar.
- * Uses the same routeToSidecar() pattern as run_command and read_file.
+ * 8 tools for controlling desktop applications. Each tool accepts a `target`
+ * parameter to route to a specific sidecar. Without `target`, attempts local
+ * execution (currently stub — TODO: implement per-platform AppController).
+ * Respects --no-local-tools flag.
  */
 
 import type { ToolDefinition, ToolResult } from './registry.ts';
 import { routeToSidecar } from './sidecar-route.ts';
+import { isNoLocalTools } from './local-tools-guard.ts';
+
+const LOCAL_NOT_IMPLEMENTED = 'Error: Local desktop tool execution is not yet implemented. Specify a "target" sidecar to route this command to a remote machine, or use list_sidecars to see available sidecars.';
+const LOCAL_DISABLED_MSG = 'Error: Local tool execution is disabled (--no-local-tools). Specify a "target" sidecar to route this command to a remote machine. Use list_sidecars to see available sidecars.';
+
+function localGuard(): string {
+  if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+  return LOCAL_NOT_IMPLEMENTED;
+}
 
 // --- Tool definitions ---
 
@@ -18,7 +28,7 @@ export const desktopListWindowsTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
   },
@@ -27,8 +37,7 @@ export const desktopListWindowsTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'list_windows', params, 'desktop');
     }
-    // TODO: Local execution — implement per-platform AppController
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -39,7 +48,7 @@ export const desktopSnapshotTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     pid: {
@@ -53,7 +62,7 @@ export const desktopSnapshotTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'get_window_tree', params, 'desktop');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -64,7 +73,7 @@ export const desktopClickTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     element_id: {
@@ -78,7 +87,7 @@ export const desktopClickTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'click_element', params, 'desktop');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -89,7 +98,7 @@ export const desktopTypeTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     text: {
@@ -108,7 +117,7 @@ export const desktopTypeTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'type_text', params, 'desktop');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -119,7 +128,7 @@ export const desktopPressKeysTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     keys: {
@@ -133,7 +142,7 @@ export const desktopPressKeysTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'press_keys', params, 'desktop');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -144,7 +153,7 @@ export const desktopLaunchAppTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     executable: {
@@ -163,7 +172,7 @@ export const desktopLaunchAppTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'launch_app', params, 'desktop');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -174,7 +183,7 @@ export const desktopScreenshotTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     pid: {
@@ -188,7 +197,7 @@ export const desktopScreenshotTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'capture_screen', params, 'screenshot');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 
@@ -199,7 +208,7 @@ export const desktopFocusWindowTool: ToolDefinition = {
   parameters: {
     target: {
       type: 'string',
-      description: 'Sidecar name or ID to route this command to',
+      description: 'Sidecar name or ID to route this command to (omit for local execution)',
       required: false,
     },
     pid: {
@@ -213,7 +222,7 @@ export const desktopFocusWindowTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'focus_window', params, 'desktop');
     }
-    return 'Error: Desktop tools require a target sidecar. Specify a target parameter.';
+    return localGuard();
   },
 };
 

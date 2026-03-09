@@ -45,6 +45,7 @@ export interface DaemonConfig {
   dbPath: string;
   dataDir: string;
   healthCheckInterval?: number;  // ms
+  noLocalTools?: boolean;        // disable local tool execution
 }
 
 let shutdownInProgress = false;
@@ -78,6 +79,9 @@ function parseArgs(): Partial<DaemonConfig> {
       case '--health-interval':
         config.healthCheckInterval = parseInt(args[++i]!, 10);
         break;
+      case '--no-local-tools':
+        (config as any).noLocalTools = true;
+        break;
       case '--help':
       case '-h':
         console.log(`
@@ -91,6 +95,8 @@ Options:
   --db-path <path>         Database file path (default: ~/.jarvis/jarvis.db)
   --data-dir <path>        Data directory (default: ~/.jarvis)
   --health-interval <ms>   Health check interval in ms (default: 30000)
+  --no-local-tools         Disable local tool execution (run_command, read_file, etc).
+                           Tools will only work when routed to a sidecar via target param.
   --help, -h               Show this help message
 
 Example:
@@ -442,6 +448,12 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     // Serve public assets (wake word models, WASM) from ui/public/
     const uiPublicDir = path.join(import.meta.dir, '../../ui/public');
     wsService.setPublicDir(uiPublicDir);
+
+    // 9b. Apply --no-local-tools flag if set
+    if (config.noLocalTools) {
+      const { setNoLocalTools } = await import('../actions/tools/builtin.ts');
+      setNoLocalTools(true);
+    }
 
     // 10. Start all services
     await registry.startAll();

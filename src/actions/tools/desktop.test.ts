@@ -45,10 +45,10 @@ describe('DESKTOP_TOOLS', () => {
     }
   });
 
-  test('returns error without target', async () => {
+  test('returns not-implemented error without target (local execution stub)', async () => {
     for (const tool of DESKTOP_TOOLS) {
       const result = await tool.execute({});
-      expect(String(result)).toContain('Error');
+      expect(String(result)).toContain('not yet implemented');
     }
   });
 });

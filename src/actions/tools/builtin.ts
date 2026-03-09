@@ -18,6 +18,11 @@ const terminal = new TerminalExecutor({ timeout: 30000 });
 // Shared browser controller (lazy-connected on first browser tool use)
 export const browser = new BrowserController();
 
+import { isNoLocalTools, LOCAL_DISABLED_MSG } from './local-tools-guard.ts';
+// Re-export for convenience
+export { setNoLocalTools, isNoLocalTools } from './local-tools-guard.ts';
+
+
 /**
  * Convert a ToolDefinition's parameters to JSON Schema for LLM tool use.
  */
@@ -84,6 +89,8 @@ export const runCommandTool: ToolDefinition = {
       }, 'terminal');
     }
 
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+
     const command = params.command as string;
     const cwd = (params.cwd as string) || undefined;
     const timeout = (params.timeout as number) || undefined;
@@ -125,6 +132,8 @@ export const readFileTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'read_file', { path: params.path }, 'filesystem');
     }
+
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
 
     const filePath = resolve(params.path as string);
 
@@ -174,6 +183,8 @@ export const writeFileTool: ToolDefinition = {
       return routeToSidecar(target, 'write_file', { path: params.path, content: params.content }, 'filesystem');
     }
 
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+
     const filePath = resolve(params.path as string);
     const content = params.content as string;
 
@@ -203,6 +214,8 @@ export const listDirectoryTool: ToolDefinition = {
     if (target) {
       return routeToSidecar(target, 'list_directory', { path: params.path }, 'filesystem');
     }
+
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
 
     const dirPath = resolve(params.path as string);
 
@@ -285,7 +298,7 @@ function formatSnapshot(snap: PageSnapshot): string {
 
 export const browserNavigateTool: ToolDefinition = {
   name: 'browser_navigate',
-  description: 'Navigate the browser to a URL. Chrome is auto-launched if not already running. Returns page text content and a list of interactive elements with [id] numbers you can reference in browser_click and browser_type.',
+  description: 'Navigate the browser to a URL. Returns page text content and a list of interactive elements with [id] numbers you can reference in browser_click and browser_type. Optionally specify a "target" sidecar to use a remote browser.',
   category: 'browser',
   parameters: {
     url: {
@@ -293,8 +306,18 @@ export const browserNavigateTool: ToolDefinition = {
       description: 'The URL to navigate to',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_navigate', { url: params.url }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const snap = await browser.navigate(params.url as string);
       return formatSnapshot(snap);
@@ -308,8 +331,19 @@ export const browserSnapshotTool: ToolDefinition = {
   name: 'browser_snapshot',
   description: 'Get the current page content and interactive elements. Each element has an [id] you can use with browser_click and browser_type. Use this after clicking or typing to see what changed.',
   category: 'browser',
-  parameters: {},
-  execute: async () => {
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_snapshot', {}, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const snap = await browser.snapshot();
       return formatSnapshot(snap);
@@ -329,8 +363,18 @@ export const browserClickTool: ToolDefinition = {
       description: 'The [id] of the element to click (from browser_snapshot)',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_click', { element_id: params.element_id }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       return await browser.click(params.element_id as number);
     } catch (err) {
@@ -359,8 +403,22 @@ export const browserTypeTool: ToolDefinition = {
       description: 'Press Enter after typing (default: false)',
       required: false,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_type', {
+        element_id: params.element_id,
+        text: params.text,
+        submit: params.submit,
+      }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       return await browser.type(
         params.element_id as number,
@@ -377,8 +435,19 @@ export const browserScreenshotTool: ToolDefinition = {
   name: 'browser_screenshot',
   description: 'Take a screenshot of the current browser page. The image is sent directly to the AI for visual analysis.',
   category: 'browser',
-  parameters: {},
-  execute: async () => {
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_screenshot', {}, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const { base64, mimeType } = await browser.screenshotBuffer();
       return {
@@ -395,7 +464,7 @@ export const browserScreenshotTool: ToolDefinition = {
 
 export const browserScrollTool: ToolDefinition = {
   name: 'browser_scroll',
-  description: 'Scroll the page up or down. Use this when you need to see content below the fold, find elements not visible in the current viewport, or reach a comment box at the bottom of a page. After scrolling, use browser_snapshot to see the new content.',
+  description: 'Scroll the page up or down. Use this when you need to see content below the fold. After scrolling, use browser_snapshot to see the new content.',
   category: 'browser',
   parameters: {
     direction: {
@@ -408,8 +477,21 @@ export const browserScrollTool: ToolDefinition = {
       description: 'Pixels to scroll (default: one viewport height). Use larger values like 2000 to jump further.',
       required: false,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_scroll', {
+        direction: params.direction,
+        amount: params.amount,
+      }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const direction = (params.direction as string) === 'up' ? 'up' : 'down';
       const amount = params.amount as number | undefined;
@@ -422,7 +504,7 @@ export const browserScrollTool: ToolDefinition = {
 
 export const browserEvaluateTool: ToolDefinition = {
   name: 'browser_evaluate',
-  description: 'Execute JavaScript in the browser page context. Use this for advanced interactions when the standard tools are not enough: scrolling to specific elements, clicking by text content, reading computed styles, interacting with SPAs, etc. Returns the result as a string.',
+  description: 'Execute JavaScript in the browser page context. Use this for advanced interactions when the standard tools are not enough.',
   category: 'browser',
   parameters: {
     expression: {
@@ -430,8 +512,18 @@ export const browserEvaluateTool: ToolDefinition = {
       description: 'JavaScript expression to evaluate in the page. For complex operations, wrap in an IIFE: (() => { ... })()',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_evaluate', { expression: params.expression }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const result = await browser.evaluate(params.expression as string);
       if (result === undefined || result === null) return '(no return value)';
