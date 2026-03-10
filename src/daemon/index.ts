@@ -34,6 +34,7 @@ import { EmergencyController } from "../authority/emergency.ts";
 import { ApprovalDelivery } from "../authority/approval-delivery.ts";
 import { DeferredExecutor } from "../authority/deferred-executor.ts";
 import { sendDesktopNotification } from "../comms/desktop-notify.ts";
+import { SidecarManager } from "../sidecar/manager.ts";
 
 // Constants
 const DEFAULT_PORT = 3142;  // JARVIS port
@@ -44,6 +45,7 @@ export interface DaemonConfig {
   dbPath: string;
   dataDir: string;
   healthCheckInterval?: number;  // ms
+  noLocalTools?: boolean;        // disable local tool execution
 }
 
 let shutdownInProgress = false;
@@ -77,6 +79,9 @@ function parseArgs(): Partial<DaemonConfig> {
       case '--health-interval':
         config.healthCheckInterval = parseInt(args[++i]!, 10);
         break;
+      case '--no-local-tools':
+        (config as any).noLocalTools = true;
+        break;
       case '--help':
       case '-h':
         console.log(`
@@ -90,6 +95,8 @@ Options:
   --db-path <path>         Database file path (default: ~/.jarvis/jarvis.db)
   --data-dir <path>        Data directory (default: ~/.jarvis)
   --health-interval <ms>   Health check interval in ms (default: 30000)
+  --no-local-tools         Disable local tool execution (run_command, read_file, etc).
+                           Tools will only work when routed to a sidecar via target param.
   --help, -h               Show this help message
 
 Example:
@@ -162,12 +169,6 @@ async function handleShutdown(signal: string): Promise<void> {
       await bgAgent.stop();
       bgAgent = null;
     }
-
-    // Stop desktop sidecar if connected
-    try {
-      const { desktop } = await import('../actions/tools/desktop.ts');
-      if (desktop.connected) await desktop.disconnect();
-    } catch (err) { console.warn('[Daemon] Desktop disconnect failed (non-fatal):', err instanceof Error ? err.message : err); }
 
     // Stop health monitor
     if (healthMonitor) {
@@ -298,11 +299,20 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
       wsService.broadcastSubAgentProgress(event);
     });
 
+    // 6c. Create sidecar manager
+    const sidecarManager = new SidecarManager(jarvisConfig.daemon.data_dir.replace('~', os.homedir()));
+    const brainDomain = jarvisConfig.daemon.brain_domain ?? `localhost:${config.port}`;
+    sidecarManager.setBrainUrl(brainDomain);
+
+    // 6d. Wire sidecar manager to WebSocket server for WS routing
+    wsService.getServer().setSidecarManager(sidecarManager);
+
     // 7. Register services in startup order
-    //    Agent first (needs DB), Observers second, Channels third, WebSocket last (needs Agent)
+    //    Agent first (needs DB), Observers second, Channels third, Sidecar, WebSocket last (needs Agent)
     registry.register(agentService);
     registry.register(observerService);
     registry.register(channelService);
+    registry.register(sidecarManager);
     registry.register(wsService);
 
     // 8. Start health monitor (before services, so API routes can reference it)
@@ -445,6 +455,7 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
       deferredExecutor,
       awarenessService: null as any,
       goalService: undefined,
+      sidecarManager,
     };
     const apiRoutes = createApiRoutes(apiContext);
     wsService.setApiRoutes(apiRoutes);
@@ -455,6 +466,12 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     // Serve public assets (wake word models, WASM) from ui/public/
     const uiPublicDir = path.join(import.meta.dir, '../../ui/public');
     wsService.setPublicDir(uiPublicDir);
+
+    // 9b. Apply --no-local-tools flag if set
+    if (config.noLocalTools) {
+      const { setNoLocalTools } = await import('../actions/tools/builtin.ts');
+      setNoLocalTools(true);
+    }
 
     // 10. Start all services
     await registry.startAll();
@@ -493,12 +510,9 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     if (jarvisConfig.awareness?.enabled !== false) {
       try {
         const { AwarenessService } = await import('../awareness/service.ts');
-        const { DesktopController } = await import('../actions/app-control/desktop-controller.ts');
-        const awarenessDesktop = new DesktopController(jarvisConfig.desktop?.sidecar_port ?? 9224);
         const svc = new AwarenessService(
           jarvisConfig,
           agentService.getLLMManager(),
-          awarenessDesktop,
           (event) => {
             // Route awareness events through existing event pipeline
             const classified = classifyEvent({
@@ -644,7 +658,14 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
         await svc.start();
         awarenessService = svc;
         apiContext.awarenessService = svc;
-        console.log('[Daemon] Awareness service started (screen capture + OCR + context tracking)');
+        console.log('[Daemon] Awareness service started (event-driven OCR + context tracking)');
+
+        // Wire sidecar awareness events to awareness service
+        sidecarManager.onEvent((sidecarId, event) => {
+          if (['screen_capture', 'context_changed', 'idle_detected'].includes(event.event_type)) {
+            svc.handleSidecarEvent(sidecarId, event);
+          }
+        });
 
         // Auto-launch overlay widget (non-blocking, best-effort)
         if (jarvisConfig.awareness?.overlay_autolaunch !== false) {
@@ -816,6 +837,40 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
         // Non-fatal — daemon continues without goals
       }
     }
+
+    // 10g. Inject sidecar manager into tool routing layer
+    {
+      const { setSidecarManagerRef } = await import('../actions/tools/sidecar-route.ts');
+      setSidecarManagerRef(sidecarManager);
+      console.log('[Daemon] Sidecar routing enabled for run_command, read_file, write_file, list_directory');
+    }
+
+    // 10h. Wire sidecar events into event pipeline
+    sidecarManager.onEvent((sidecarId, event) => {
+      const eventType = `sidecar_${event.type}`;
+      const eventData = {
+        sidecar_id: sidecarId,
+        ...(typeof event.payload === 'object' && event.payload !== null ? event.payload as Record<string, unknown> : { payload: event.payload }),
+      };
+      const observerEvent = {
+        type: eventType,
+        data: eventData,
+        timestamp: event.timestamp ?? Date.now(),
+      };
+
+      // Classify and route
+      const classified = classifyEvent(observerEvent);
+      if (classified.priority === 'critical' || classified.priority === 'high') {
+        reactor.react(classified).catch(err =>
+          console.error('[Daemon] Sidecar event reaction error:', err)
+        );
+      } else {
+        coalescer.addEvent(classified);
+      }
+
+      // Broadcast to dashboard
+      wsService.broadcastSidecarEvent(sidecarId, observerEvent);
+    });
 
     // 11. Start health monitoring
     healthMonitor.start(config.healthCheckInterval);

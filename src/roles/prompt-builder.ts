@@ -1,4 +1,5 @@
 import type { RoleDefinition } from './types.ts';
+import { buildToolGuide } from './tool-guide.ts';
 
 export type PromptContext = {
   userName?: string;
@@ -11,6 +12,7 @@ export type PromptContext = {
   contentPipeline?: string[];
   authorityRules?: string;
   activeGoals?: string;
+  hasSidecars?: boolean;
 };
 
 /**
@@ -118,6 +120,10 @@ export function buildSystemPrompt(role: RoleDefinition, context?: PromptContext)
     sections.push('When a tool returns [AUTHORITY DENIED], explain that you lack permission and suggest alternatives.');
     sections.push('');
   }
+
+  // Tool Guide (static reference, sidecar section conditional)
+  sections.push(buildToolGuide(context?.hasSidecars ?? false));
+  sections.push('');
 
   // Current Context
   if (context) {

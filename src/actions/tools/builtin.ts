@@ -5,17 +5,27 @@
  * run_command, read_file, write_file, list_directory
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
+import { hostname, platform, arch, cpus, version } from 'node:os';
 import { TerminalExecutor } from '../terminal/executor.ts';
 import { BrowserController, type PageSnapshot } from '../browser/session.ts';
 import type { ToolDefinition, ToolResult } from './registry.ts';
 import type { LLMTool } from '../../llm/provider.ts';
+import { routeToSidecar } from './sidecar-route.ts';
+import { listSidecarsTool } from './sidecar-list.ts';
+import { DESKTOP_TOOLS } from './desktop.ts';
 
 const terminal = new TerminalExecutor({ timeout: 30000 });
 
 // Shared browser controller (lazy-connected on first browser tool use)
 export const browser = new BrowserController();
+
+import { isNoLocalTools, LOCAL_DISABLED_MSG } from './local-tools-guard.ts';
+// Re-export for convenience
+export { setNoLocalTools, isNoLocalTools } from './local-tools-guard.ts';
+
 
 /**
  * Convert a ToolDefinition's parameters to JSON Schema for LLM tool use.
@@ -49,13 +59,18 @@ export function toolDefToLLMTool(tool: ToolDefinition): LLMTool {
 
 export const runCommandTool: ToolDefinition = {
   name: 'run_command',
-  description: 'Execute a shell command and return the output. Use this to run terminal commands, scripts, or system utilities.',
+  description: 'Execute a shell command and return the output. Use this to run terminal commands, scripts, or system utilities. Optionally specify a "target" sidecar name/ID to run the command on a remote machine instead of locally.',
   category: 'terminal',
   parameters: {
     command: {
       type: 'string',
       description: 'The shell command to execute',
       required: true,
+    },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to run on a remote machine (omit for local execution)',
+      required: false,
     },
     cwd: {
       type: 'string',
@@ -69,6 +84,17 @@ export const runCommandTool: ToolDefinition = {
     },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'run_command', {
+        command: params.command,
+        cwd: params.cwd,
+        timeout: params.timeout,
+      }, 'terminal');
+    }
+
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+
     const command = params.command as string;
     const cwd = (params.cwd as string) || undefined;
     const timeout = (params.timeout as number) || undefined;
@@ -91,7 +117,7 @@ export const runCommandTool: ToolDefinition = {
 
 export const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file from disk. Returns the file content as text.',
+  description: 'Read the contents of a file from disk. Returns the file content as text. Optionally specify a "target" sidecar to read from a remote machine.',
   category: 'file-ops',
   parameters: {
     path: {
@@ -99,8 +125,20 @@ export const readFileTool: ToolDefinition = {
       description: 'The absolute or relative path to the file to read',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to read from a remote machine (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'read_file', { path: params.path }, 'filesystem');
+    }
+
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+
     const filePath = resolve(params.path as string);
 
     if (!existsSync(filePath)) {
@@ -124,7 +162,7 @@ export const readFileTool: ToolDefinition = {
 
 export const writeFileTool: ToolDefinition = {
   name: 'write_file',
-  description: 'Write content to a file on disk. Creates the file if it does not exist, overwrites if it does.',
+  description: 'Write content to a file on disk. Creates the file if it does not exist, overwrites if it does. Optionally specify a "target" sidecar to write on a remote machine.',
   category: 'file-ops',
   parameters: {
     path: {
@@ -137,8 +175,20 @@ export const writeFileTool: ToolDefinition = {
       description: 'The content to write to the file',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to write on a remote machine (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'write_file', { path: params.path, content: params.content }, 'filesystem');
+    }
+
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+
     const filePath = resolve(params.path as string);
     const content = params.content as string;
 
@@ -149,7 +199,7 @@ export const writeFileTool: ToolDefinition = {
 
 export const listDirectoryTool: ToolDefinition = {
   name: 'list_directory',
-  description: 'List the contents of a directory. Returns file and folder names with their types and sizes.',
+  description: 'List the contents of a directory. Returns file and folder names with their types and sizes. Optionally specify a "target" sidecar to list on a remote machine.',
   category: 'file-ops',
   parameters: {
     path: {
@@ -157,8 +207,20 @@ export const listDirectoryTool: ToolDefinition = {
       description: 'The absolute or relative path to the directory to list',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to list on a remote machine (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'list_directory', { path: params.path }, 'filesystem');
+    }
+
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+
     const dirPath = resolve(params.path as string);
 
     if (!existsSync(dirPath)) {
@@ -190,6 +252,165 @@ export const listDirectoryTool: ToolDefinition = {
     }
 
     return lines.join('\n');
+  },
+};
+
+// --- Clipboard / Screenshot / System Info helpers ---
+
+function localClipboardRead(): string {
+  const os = platform();
+  if (os === 'darwin') {
+    return execSync('pbpaste', { encoding: 'utf-8' });
+  } else if (os === 'win32') {
+    return execSync('powershell -command Get-Clipboard', { encoding: 'utf-8' }).trimEnd();
+  } else {
+    try {
+      return execSync('xclip -selection clipboard -o', { encoding: 'utf-8' });
+    } catch {
+      return execSync('xsel --clipboard --output', { encoding: 'utf-8' });
+    }
+  }
+}
+
+function localClipboardWrite(content: string): void {
+  const os = platform();
+  if (os === 'darwin') {
+    execSync('pbcopy', { input: content, encoding: 'utf-8' });
+  } else if (os === 'win32') {
+    execSync('powershell -command Set-Clipboard', { input: content, encoding: 'utf-8' });
+  } else {
+    try {
+      execSync('xclip -selection clipboard', { input: content, encoding: 'utf-8' });
+    } catch {
+      execSync('xsel --clipboard --input', { input: content, encoding: 'utf-8' });
+    }
+  }
+}
+
+function localCaptureScreen(): string {
+  const os = platform();
+  const tmp = `/tmp/jarvis-screenshot-${Date.now()}.png`;
+  if (os === 'darwin') {
+    execSync(`screencapture -x ${tmp}`);
+  } else if (os === 'win32') {
+    execSync(`powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen | ForEach-Object { $bmp = New-Object System.Drawing.Bitmap($_.Bounds.Width, $_.Bounds.Height); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($_.Bounds.Location, [System.Drawing.Point]::Empty, $_.Bounds.Size); $bmp.Save('${tmp}') }"`);
+  } else {
+    try {
+      execSync(`scrot ${tmp}`);
+    } catch {
+      execSync(`import -window root ${tmp}`);
+    }
+  }
+  const data = readFileSync(tmp);
+  unlinkSync(tmp);
+  return data.toString('base64');
+}
+
+function localSystemInfo(): Record<string, unknown> {
+  return {
+    hostname: hostname(),
+    os: platform(),
+    arch: arch(),
+    cpus: cpus().length,
+    node_version: version(),
+  };
+}
+
+// --- Clipboard / Screenshot / System Info tools ---
+
+export const getClipboardTool: ToolDefinition = {
+  name: 'get_clipboard',
+  description: 'Read the clipboard contents. Optionally specify a "target" sidecar name/ID to read from a remote machine instead of locally.',
+  category: 'general',
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID for remote execution (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) return routeToSidecar(target, 'get_clipboard', {}, 'clipboard');
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+    try {
+      const content = localClipboardRead();
+      return content || '[clipboard is empty]';
+    } catch (err) {
+      return `Error reading clipboard: ${err instanceof Error ? err.message : err}`;
+    }
+  },
+};
+
+export const setClipboardTool: ToolDefinition = {
+  name: 'set_clipboard',
+  description: 'Write text to the clipboard. Optionally specify a "target" sidecar name/ID to write to a remote machine instead of locally.',
+  category: 'general',
+  parameters: {
+    content: {
+      type: 'string',
+      description: 'The text to write to the clipboard',
+      required: true,
+    },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID for remote execution (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) return routeToSidecar(target, 'set_clipboard', { content: params.content }, 'clipboard');
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+    try {
+      localClipboardWrite(params.content as string);
+      return 'Clipboard updated.';
+    } catch (err) {
+      return `Error writing clipboard: ${err instanceof Error ? err.message : err}`;
+    }
+  },
+};
+
+export const captureScreenTool: ToolDefinition = {
+  name: 'capture_screen',
+  description: 'Take a screenshot of the screen. Optionally specify a "target" sidecar name/ID to capture a remote machine instead of locally.',
+  category: 'general',
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID for remote execution (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) return routeToSidecar(target, 'capture_screen', {}, 'screenshot');
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+    try {
+      const base64 = localCaptureScreen();
+      return JSON.stringify({ type: 'inline', mime_type: 'image/png', data: base64 });
+    } catch (err) {
+      return `Error capturing screen: ${err instanceof Error ? err.message : err}`;
+    }
+  },
+};
+
+export const getSystemInfoTool: ToolDefinition = {
+  name: 'get_system_info',
+  description: 'Get system information (hostname, OS, architecture, CPU count). Optionally specify a "target" sidecar name/ID to query a remote machine instead of locally.',
+  category: 'general',
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID for remote execution (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) return routeToSidecar(target, 'get_system_info', {}, 'system_info');
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
+    return JSON.stringify(localSystemInfo(), null, 2);
   },
 };
 
@@ -240,7 +461,7 @@ function formatSnapshot(snap: PageSnapshot): string {
 
 export const browserNavigateTool: ToolDefinition = {
   name: 'browser_navigate',
-  description: 'Navigate the browser to a URL. Chrome is auto-launched if not already running. Returns page text content and a list of interactive elements with [id] numbers you can reference in browser_click and browser_type.',
+  description: 'Navigate the browser to a URL. Returns page text content and a list of interactive elements with [id] numbers you can reference in browser_click and browser_type. Optionally specify a "target" sidecar to use a remote browser.',
   category: 'browser',
   parameters: {
     url: {
@@ -248,8 +469,18 @@ export const browserNavigateTool: ToolDefinition = {
       description: 'The URL to navigate to',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_navigate', { url: params.url }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const snap = await browser.navigate(params.url as string);
       return formatSnapshot(snap);
@@ -263,8 +494,19 @@ export const browserSnapshotTool: ToolDefinition = {
   name: 'browser_snapshot',
   description: 'Get the current page content and interactive elements. Each element has an [id] you can use with browser_click and browser_type. Use this after clicking or typing to see what changed.',
   category: 'browser',
-  parameters: {},
-  execute: async () => {
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_snapshot', {}, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const snap = await browser.snapshot();
       return formatSnapshot(snap);
@@ -284,8 +526,18 @@ export const browserClickTool: ToolDefinition = {
       description: 'The [id] of the element to click (from browser_snapshot)',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_click', { element_id: params.element_id }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       return await browser.click(params.element_id as number);
     } catch (err) {
@@ -314,8 +566,22 @@ export const browserTypeTool: ToolDefinition = {
       description: 'Press Enter after typing (default: false)',
       required: false,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_type', {
+        element_id: params.element_id,
+        text: params.text,
+        submit: params.submit,
+      }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       return await browser.type(
         params.element_id as number,
@@ -332,8 +598,19 @@ export const browserScreenshotTool: ToolDefinition = {
   name: 'browser_screenshot',
   description: 'Take a screenshot of the current browser page. The image is sent directly to the AI for visual analysis.',
   category: 'browser',
-  parameters: {},
-  execute: async () => {
+  parameters: {
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
+  },
+  execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_screenshot', {}, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const { base64, mimeType } = await browser.screenshotBuffer();
       return {
@@ -350,7 +627,7 @@ export const browserScreenshotTool: ToolDefinition = {
 
 export const browserScrollTool: ToolDefinition = {
   name: 'browser_scroll',
-  description: 'Scroll the page up or down. Use this when you need to see content below the fold, find elements not visible in the current viewport, or reach a comment box at the bottom of a page. After scrolling, use browser_snapshot to see the new content.',
+  description: 'Scroll the page up or down. Use this when you need to see content below the fold. After scrolling, use browser_snapshot to see the new content.',
   category: 'browser',
   parameters: {
     direction: {
@@ -363,8 +640,21 @@ export const browserScrollTool: ToolDefinition = {
       description: 'Pixels to scroll (default: one viewport height). Use larger values like 2000 to jump further.',
       required: false,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_scroll', {
+        direction: params.direction,
+        amount: params.amount,
+      }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const direction = (params.direction as string) === 'up' ? 'up' : 'down';
       const amount = params.amount as number | undefined;
@@ -377,7 +667,7 @@ export const browserScrollTool: ToolDefinition = {
 
 export const browserEvaluateTool: ToolDefinition = {
   name: 'browser_evaluate',
-  description: 'Execute JavaScript in the browser page context. Use this for advanced interactions when the standard tools are not enough: scrolling to specific elements, clicking by text content, reading computed styles, interacting with SPAs, etc. Returns the result as a string.',
+  description: 'Execute JavaScript in the browser page context. Use this for advanced interactions when the standard tools are not enough.',
   category: 'browser',
   parameters: {
     expression: {
@@ -385,8 +675,18 @@ export const browserEvaluateTool: ToolDefinition = {
       description: 'JavaScript expression to evaluate in the page. For complex operations, wrap in an IIFE: (() => { ... })()',
       required: true,
     },
+    target: {
+      type: 'string',
+      description: 'Sidecar name or ID to use a remote browser (omit for local)',
+      required: false,
+    },
   },
   execute: async (params) => {
+    const target = params.target as string | undefined;
+    if (target) {
+      return routeToSidecar(target, 'browser_evaluate', { expression: params.expression }, 'browser');
+    }
+    if (isNoLocalTools()) return LOCAL_DISABLED_MSG;
     try {
       const result = await browser.evaluate(params.expression as string);
       if (result === undefined || result === null) return '(no return value)';
@@ -406,9 +706,12 @@ export const NON_BROWSER_TOOLS: ToolDefinition[] = [
   readFileTool,
   writeFileTool,
   listDirectoryTool,
+  getClipboardTool,
+  setClipboardTool,
+  captureScreenTool,
+  getSystemInfoTool,
+  listSidecarsTool,
 ];
-
-import { DESKTOP_TOOLS } from './desktop.ts';
 
 /**
  * All built-in tools.
